@@ -1,10 +1,22 @@
 nelmio_cors:
     defaults:
         origin_regex: true
-        allow_origin: ['%env(CORS_ALLOW_ORIGIN)%']
+        allow_origin: ['http://localhost:5173']
+        allow_credentials: true
         allow_methods: ['GET', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE']
         allow_headers: ['Content-Type', 'Authorization']
-        expose_headers: ['Link']
+        expose_headers: ['Authorization']
         max_age: 3600
     paths:
         '^/': null
+        '^/api/login':
+            allow_origin: ['*']
+            allow_headers: ['*']
+            allow_methods: ['GET', 'OPTIONS', 'POST', 'PUT', 'DELETE']
+            max_age: 3600
+            allow_credentials: true
+        '^/auth/':  # Assure-toi que cela couvre les routes de ton API d'authentification
+            allow_origin: ['*']
+            allow_credentials: true
+            allow_methods: ['GET', 'POST', 'OPTIONS']
+            allow_headers: ['Content-Type', 'Authorization']
