@@ -6,6 +6,8 @@ use App\Class\Mail;
 use App\Entity\User;
 use App\Entity\LoginCode;
 use App\Form\RegisterUserType;
+use Lexik\Bundle\JWTAuthenticationBundle\Encoder\JWTEncoderInterface;
+use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTManager;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Session\SessionInterface;
@@ -64,7 +66,7 @@ class AuthController extends AbstractController
     }
 
     #[Route('/auth/login', name: 'api_login', methods: ['POST'])]
-    public function login(Request $request, UserRepository $userRepository, JWTTokenManagerInterface $JWTManager): JsonResponse
+    public function login(Request $request, UserRepository $userRepository, JWTManager $JWTManager): JsonResponse
     {
         $data = json_decode($request->getContent(), true);
 
@@ -92,7 +94,7 @@ class AuthController extends AbstractController
     }
 
     #[Route('/auth/send-code', name: 'send_code', methods: ['POST'])]
-    public function sendCode(Request $request, MailerInterface $mailer, LoggerInterface $logger): JsonResponse
+    public function sendCode(Request $request, MailerInterface $mailer, LoggerInterface $logger, JWTTokenManagerInterface $jwtManager, EntityManagerInterface $em): JsonResponse
     {
         $data = json_decode($request->getContent(), true);
 
@@ -105,6 +107,17 @@ class AuthController extends AbstractController
 
         // Génération d'un code à 6 chiffres
         $code = random_int(100000, 999999);
+
+        // Vérifier si l'utilisateur existe, sinon le créer
+        $user = $em->getRepository(User::class)->findOneBy(['email' => $emailAddress]);
+        if (!$user) {
+            $user = new User();
+            $user->setEmail($emailAddress);
+            $em->persist($user);
+            $em->flush();
+    }
+
+        $token = $jwtManager->create($user);
 
         $session = $request->getSession();
 
@@ -125,59 +138,84 @@ class AuthController extends AbstractController
         //     'code' => $code
         // ];
         // $email->send($emailAddress,'John Doe',  "Test de mail d'authentification", "authCode.html", $vars );
-            
 
-        // Stockez le code dans une session ou une base de données temporaire (à configurer)
-        // $this->addFlash('auth_code', $code);
-
-        return new JsonResponse(['message' => 'Code sent successfully']);
+        return new JsonResponse(['message' => 'Code sent successfully', 
+                                 'token' => $token
+                                ]);
     }
 
     #[Route('/auth/verify-code', name: 'verify_code', methods: ['POST'])]
-    public function verifyCode(Request $request, EntityManagerInterface $em, LoggerInterface $logger): JsonResponse
+    public function verifyCode(Request $request, EntityManagerInterface $em, LoggerInterface $logger, JWTEncoderInterface $jwtEncoder): JsonResponse
     {
         $data = json_decode($request->getContent(), true);
         $submittedCode = $data['code'];
         $submittedEmail = $data['email'];
     
-        $session = $request->getSession();
+        // $session = $request->getSession();
 
-        $logger->debug('Cookies de la session :', ['session_id' => $session->getId()]);
+        // $logger->debug('Cookies de la session :', ['session_id' => $session->getId()]);
 
-        // Récupérer le code et l'email depuis la session
-        $storedCode = $session->get('verification_code');
-        $storedEmail = $session->get('email');
+        // // Récupérer le code et l'email depuis la session
+        // $storedCode = $session->get('verification_code');
+        // $storedEmail = $session->get('email');
 
-        $logger->debug('Contenu de la session verify_code : ', [
-            'verification_code' => $session->get('verification_code'),
-            'email' => $session->get('email'),
-        ]);
+        // $logger->debug('Contenu de la session verify_code : ', [
+        //     'verification_code' => $session->get('verification_code'),
+        //     'email' => $session->get('email'),
+        // ]);
         
-        // Vérifier que les valeurs correspondent
-        if ($storedCode && $storedEmail && 
-            $storedCode == $submittedCode && 
-            $storedEmail == $submittedEmail) {
+        // // Vérifier que les valeurs correspondent
+        // if ($storedCode && $storedEmail && 
+        //     $storedCode == $submittedCode && 
+        //     $storedEmail == $submittedEmail) {
     
-            // Récupérer l'utilisateur depuis la base de données
-            $user = $em->getRepository(User::class)->findOneByEmail($submittedEmail);
+        //     // Récupérer l'utilisateur depuis la base de données
+        //     $user = $em->getRepository(User::class)->findOneByEmail($submittedEmail);
     
-            if (!$user) {
-                return new JsonResponse(['error' => 'User not found'], JsonResponse::HTTP_NOT_FOUND);
-            }
+        //     if (!$user) {
+        //         return new JsonResponse(['error' => 'User not found'], JsonResponse::HTTP_NOT_FOUND);
+        //     }
     
-            // Authentification réussie, connecter l'utilisateur dans la session
-            $session->set('user_id', $user->getId());
-            $session->set('user_email', $user->getEmail());
+        //     // Authentification réussie, connecter l'utilisateur dans la session
+        //     $session->set('user_id', $user->getId());
+        //     $session->set('user_email', $user->getEmail());
     
-            // Nettoyer la session du code
-            $session->remove('verification_code');
-            $session->remove('email');
+        //     // Nettoyer la session du code
+        //     $session->remove('verification_code');
+        //     $session->remove('email');
     
-            // Retourner une réponse de succès sans token
-            return new JsonResponse(['message' => 'Code verified successfully'], JsonResponse::HTTP_OK);
+        //     // Retourner une réponse de succès sans token
+        //     return new JsonResponse(['message' => 'Code verified successfully'], JsonResponse::HTTP_OK);
+        
+        // Récupérer le JWT depuis l'en-tête Authorization
+        $token = $request->headers->get('Authorization');
+
+        if (strpos($token, 'Bearer ') === 0) {
+            $token = substr($token, 7);
+        } else {
+            return new JsonResponse(['error' => 'Token missing or invalid'], 400);
         }
     
-        return new JsonResponse(['error' => 'Invalid code or email'], JsonResponse::HTTP_UNAUTHORIZED);
-    }
+        try {
+            $decoded = $jwtEncoder->decode($token);
+        } catch (\Exception $e) {
+            return new JsonResponse(['error' => 'Invalid token'], 400);
+        }
+    
+        // Vérifier si l'utilisateur existe
+        $user = $em->getRepository(User::class)->findOneBy(['email' => $decoded['email']]);
+        if (!$user) {
+            return new JsonResponse(['error' => 'User not found'], 404);
+        }
+    
+        // Comparer le code
+        if ($decoded['email'] !== $submittedEmail || $submittedCode !== $user->getVerificationCode()) {
+            return new JsonResponse(['error' => 'Invalid code or email'], 400);
+        }
+    
+        $logger->info("Code vérifié avec succès pour l'email: $submittedEmail");
+    
+        return new JsonResponse(['message' => 'Verification successful']);
+        }
 
 }
